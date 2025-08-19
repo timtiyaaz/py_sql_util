@@ -2,9 +2,12 @@ import os
 import csv
 import json
 from abc import ABC, abstractmethod
-from typing import Optional
-import mysql.connector as mysql # type: ignore
-import singlestoredb as s2 # type: ignore
+from typing import Optional, Union
+import mysql.connector as mysql
+import mysql.connector.abstracts as abstracts
+import mysql.connector.pooling as pooling
+import mysql.connector.cursor as cursor
+import singlestoredb as s2
 import time
 import logging
 
@@ -19,9 +22,9 @@ class Connection(ABC):
         self.user: str = user
         self.password: str = password
         self.database: str = database
-        self.port: str = port
-        self.connection: Optional[mysql.MySQLConnection] = None
-        self.cursor: Optional[mysql.MySQLCursorDict] = None
+        self.port: int = int(port)
+        self.connection: Optional[Union[pooling.PooledMySQLConnection, abstracts.MySQLConnectionAbstract, s2.connection.Connection]] = None
+        self.cursor: Optional[Union[cursor.MySQLCursorDict, s2.connection.Cursor]] = None
 
     @classmethod
     def from_dict(cls, conn_details):
@@ -38,16 +41,26 @@ class Connection(ABC):
         pass 
 
     def execute_and_fetchall(self, sql, params=()):
+        assert self.cursor is not None # the cursor and connection are always set before running this (instantiation)
+
         start = time.perf_counter()
         if len(params) >= 1:
-            self.cursor.execute(sql, params) # type: ignore
+            self.cursor.execute(sql, params)
         else:
-            self.cursor.execute(sql) # type: ignore
+            self.cursor.execute(sql)
         end = time.perf_counter()
         elapsed = end - start
         
         logging.info(f'Query execution completed after {elapsed:.4} seconds')
-        return self.cursor.fetchall() # type: ignore
+        return self.cursor.fetchall()
+    
+    def close(self):
+        assert self.cursor is not None
+        self.cursor.close()
+
+        assert self.connection is not None
+        self.connection.close()
+
 
 class MySqlConnection(Connection):
     def __init__(self, host, user, password, database, port):
@@ -69,7 +82,7 @@ class S2Connection(Connection):
         super().__init__(host, user, password, database, port)
 
     def connect(self): # type: ignore
-        self.connection = s2.connect(
+        self.connection = s2.connection.connect(
             results_type='dict',
             host=self.host,
             user=self.user,
@@ -77,7 +90,7 @@ class S2Connection(Connection):
             database=self.database,
             port=self.port
         )
-        self.cursor = self.connection.cursor() # type: ignore
+        self.cursor = self.connection.cursor()
         return self
 
 def get_db_credentials(conn_name):
@@ -119,8 +132,6 @@ def clear_all_results(dest_dir):
             os.remove(file_path)
 
 
-def close_sql_objects(objects: list[Connection]=[]):
-    if len(objects) > 0:
-        for object in objects:
-            object.connection.close() # type: ignore
-            object.cursor.close() # type: ignore
+def close_sql_objects(objects: list[Union[MySqlConnection, S2Connection]]=[]):
+    for object in objects:
+        object.close()
